@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "nexus"
+version = "0.1.0"
+description = ""
+authors = ["Nicholas Devenish <ndevenish@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pydantic = "^2.8.2"
+
+[tool.poetry.scripts]
+parse = "nexus.parse:run"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

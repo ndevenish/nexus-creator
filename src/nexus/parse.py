@@ -1,31 +1,69 @@
 import sys
-from typing import Self
-from xml.etree import ElementTree
 from argparse import ArgumentParser
 from itertools import chain
-from pydantic import BaseModel
 from pathlib import Path
 import glob
+from xsdata_pydantic.bindings import XmlParser
+
+from .nxdl import Definition
 
 # NS = "{http://definition.nexusformat.org/nxdl/3.1}"
 
 
-class BaseDefinition(BaseModel):
-    name: str
-    parent: str
+# class Attribute(BaseModel):
+#     name: str
+#     datatype: str = "NXChar"
+#     recommended: bool = False
+#     optional: bool = True
+#     doc: str | None = None
+#     enumeration: list[Any] = []
+#     dimensions: list[Any] = []
 
-    @classmethod
-    def parse(cls, root: ElementTree.Element, clear: bool = False) -> Self:
-        obj = BaseDefinition(name=root.attrib["name"], parent=root.attrib["extends"])
+#     @classmethod
+#     def parse(cls, root: ElementTree.Element, clear: bool = False) -> Self:
+#         attr = Attribute(
+#             name=root.attrib["name"],
+#         )
+#         if clear:
+#             del root.attrib["name"]
+#             assert not root.attrib
 
-        if clear:
-            del root.attrib["{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"]
-            del root.attrib["category"]
-            del root.attrib["extends"]
-            del root.attrib["type"]
-            del root.attrib["name"]
 
-        # {'name': 'NXentry', 'type': 'group', 'extends': 'NXobject', 'category': 'base', '{http://www.w3.org/2001/XMLSchema-instance}schemaLocation': 'http://definition.nexusformat.org/nxdl/3.1 ../nxdl.xsd'}
+# class BaseDefinition(BaseModel):
+#     name: str
+#     parent: str
+#     doc: str
+#     attributes: list[Attribute]
+
+#     @classmethod
+#     def parse(cls, root: ElementTree.Element, clear: bool = False) -> Self:
+#         parts = {
+#             "name": root.attrib["name"],
+#             "parent": root.attrib["extends"],
+#         }
+
+#         if root.attrib["type"] != "group" or root.attrib["category"] != "base":
+#             raise RuntimeError("Group or type does not match")
+#         if clear:
+#             del root.attrib["{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"]
+#             del root.attrib["category"]
+#             del root.attrib["extends"]
+#             del root.attrib["type"]
+#             del root.attrib["name"]
+#             assert not root.attrib, "Failed to clear root properties"
+
+#         # Now, four classes of child:
+#         # - doc: Documentation for this object
+#         # - attribute: Something held as an hdf5 attribute
+#         # - group: A subgroup of NX objects
+#         # - field: A dataset that holds a value in this object
+#         if doc := root.find("{*}doc}"):
+#             parts["doc"] = textwrap.dedent(doc.text).strip()
+#             root.remove(doc)
+
+#         parts["attributes"] = [Attribute.parse(x) for x in root.findall("{*}attribute")]
+
+#         return BaseDefinition(**parts)
 
 
 def run():
@@ -45,9 +83,7 @@ def run():
         sys.exit("Error: No sources found after expansion")
 
     # print(args)
-    base_definitions: list[BaseDefinition] = []
+    base_definitions: list[Definition] = []
     for source in args.sources:
-        tree = ElementTree.parse(source)
-        base_definitions.append(BaseDefinition.parse(tree.getroot(), clear=True))
-
-    breakpoint()
+        parser = XmlParser()
+        defn = parser.parse(source, Definition)

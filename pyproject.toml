@@ -8,9 +8,15 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.12"
 pydantic = "^2.8.2"
+xsdata = "^24.7"
+xsdata-pydantic = "^24.5"
+rich = "^13.7.1"
 
 [tool.poetry.scripts]
 parse = "nexus.parse:run"
+
+[tool.poetry.group.dev.dependencies]
+xsdata = {extras = ["cli"], version = "^24.7"}
 
 [build-system]
 requires = ["poetry-core"]

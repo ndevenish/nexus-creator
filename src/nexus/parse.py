@@ -11,7 +11,7 @@ from pydantic.functional_validators import BeforeValidator
 
 from . import nxdl
 from .nxdl import Definition, DocType
-from typing import Any, Annotated
+from typing import Any, Annotated, Self
 
 
 def _convert_doc(doc: DocType | list[DocType]) -> str:
@@ -95,7 +95,6 @@ def _prepare_paragraphs(
             # If we've been given non-whitespace indent
             output = textwrap.indent(output, indent, lambda _: True)
 
-    print(f"{output=}")
     return output
 
 
@@ -110,6 +109,14 @@ class ClassAttribute(BaseModel):
             return f"{doccomment}\n{self.name} : {self.type}"
         else:
             return f"{self.name} : {self.type}"
+
+    @classmethod
+    def from_attribute(cls, attr: nxdl.AttributeType) -> Self:
+        return cls(
+            name=attr.name,
+            type=_resolve_type(attr.type_value, optional=attr.optional),
+            doc=attr.doc,
+        )
 
 
 class ClassDefinition(BaseModel):
@@ -144,6 +151,45 @@ class ClassDefinition(BaseModel):
         return "\n".join(parts)
 
 
+def _field_repr(field: nxdl.FieldType) -> str | None:
+    """
+    Construct a minimized FieldType declaration, removing things we already know
+    """
+    to_set = {}
+    for k, v in field.model_fields.items():
+        # if k == "attribute":
+        #     breakpoint()
+        if getattr(field, k) != v.get_default(call_default_factory=True):
+            to_set[k] = getattr(field, k)
+    # Things we implicitly have access to
+    to_set.pop("doc", None)
+    to_set.pop("type_value", None)
+    to_set.pop("enumeration", None)
+    to_set.pop("attribute", None)
+
+    # name is required but redundant for our purposes. Don't give a
+    # result if it's the only value
+    if to_set.keys() == {"name"}:
+        return None
+    return "FieldType(" + ", ".join(f"{k}={v!r}" for k, v in to_set.items()) + ")"
+
+
+def _create_attribute_subclass(
+    attributes: list[nxdl.AttributeType], field_name: str, definition_name: str
+) -> ClassDefinition:
+    # Work out what to call this
+    name = f"Field {field_name}".replace("_", " ").title().replace(" ", "")
+    # If we only have one attribute, name for that
+    if len(attributes) == 1:
+        name = "Field" + attributes[0].name.replace("_", " ").title().replace(" ", "")
+
+    return ClassDefinition(
+        name=name,
+        parent="Field",
+        attributes=[ClassAttribute.from_attribute(attr) for attr in attributes],
+    )
+
+
 def run():
     parser = ArgumentParser()
     parser.add_argument(
@@ -167,8 +213,7 @@ def run():
 
     # Don't regenerate NXobject
     definitions = [x for x in definitions if not x.name == "NXobject"]
-
-    output = [IMPORTS]
+    generate_classes: list[ClassDefinition] = []
 
     for defn in definitions:
         # Holds separate line parts for the class body output
@@ -179,10 +224,7 @@ def run():
             # Attributes are simple values, stored on the group (or
             # dataset) itself. These can just get added as plain
             # properties onto the output class.
-            attr_type = _resolve_type(attr.type_value, optional=attr.optional)
-            new_class.attributes.append(
-                ClassAttribute(name=attr.name, type=attr_type, doc=attr.doc)
-            )
+            new_class.attributes.append(ClassAttribute.from_attribute(attr))
 
             # Unhandled things that we might want to do later
             assert not attr.enumeration
@@ -190,10 +232,13 @@ def run():
 
         for group in defn.group:
             name = group.name or group.type_value[2:]
+            group_type = f"list[{group.type_value}]"
+            if group.optional or group.min_occurs == 0:
+                # If optional, then default to an empty list
+                group_type += " = []"
+
             new_class.groups.append(
-                ClassAttribute(
-                    name=name, type=f"list[{group.type_value}]", doc=group.doc
-                )
+                ClassAttribute(name=name, type=group_type, doc=group.doc)
             )
 
             assert not group.group, "Groups (typed?) contains groups?!?!?"
@@ -218,123 +263,60 @@ def run():
             base_type = _resolve_type(field.type_value, optional=False)
             if field.enumeration:
                 field_type = f"Literal[{', '.join(repr(x.value) for x in field.enumeration.item)}]"
-                # breakpoint()
-                if optional:
-                    field_type += " | None = None"
             else:
                 if field.units:
                     # We have a dimensioned unit
+                    # Note that this is currently invalid pint declaration, we
+                    # need to find a way to make this declarable (dimension or plain unit)
                     field_type = f"Quantity[{base_type}]"
                 else:
                     field_type = base_type
-                if optional:
-                    field_type += " | None = None"
+
+            # Fields can have lists of declared attributes. We handle this by
+            # having explicit Field subclasses with named attributes containing
+            # the meta-information about what type they hold.
+            #
+            # If no specific declared attributes, we still use a Field instance
+            # both for consistency and for the ability to set more.
+            field_superclass = "Field"
+            if field.attribute:
+                attr_class = _create_attribute_subclass(
+                    field.attribute, field.name, defn.name
+                )
+                generate_classes.append(attr_class)
+                field_superclass = attr_class.name
+
+            field_type = f"{field_superclass}[{field_type}]"
+            if optional:
+                field_type += " | None"
+
+            # If we have a complex (or non-default) field spec, annotate the type with it
+            if field_annotation := _field_repr(field):
+                field_type = f"Annotated[{field_type}, {field_annotation}]"
+
+            if optional:
+                field_type += " = None"
 
             new_class.fields.append(
                 ClassAttribute(name=field.name, type=field_type, doc=field.doc)
             )
 
-            # Other things we can't or don't handle
+            # Other things we can't or don't yet handle
             assert field.name_type == nxdl.FieldTypeNameType.SPECIFIED
+            assert not field.dimensions
+            assert not field.dimensions and field.max_occurs == 1
+            assert field.min_occurs == 0
 
-        print(str(new_class))
+            # Other things not handled, that otherwise may be present on
+            # the field annotation:
+            # - units
+            # - long_name
+            # - signal
+            # - primary
+            # - stride
+            # - data_offset
+            # - interpretation
 
-        # dimensions: dimensions of a data element in a NeXus file
-        # attribute: attributes to be used with this field
-        # enumeration: A field can specify which values are to be used
-        # units: String describing the engineering units. The string
-        #     should be appropriate for the value and should conform to
-        #     the NeXus rules for units. Conformance is not validated at
-        #     this time.
-        # long_name: Descriptive name for this field (may include
-        #     whitespace and engineering units). Often, the long_name
-        #     (when defined) will be used as the axis label on a plot.
-        # signal: Presence of the ``signal`` attribute means this field is
-        #     an ordinate. Integer marking this field as plottable data
-        #     (ordinates). The value indicates the priority of selection
-        #     or interest. Some facilities only use ``signal=1`` while
-        #     others use ``signal=2`` to indicate plottable data of
-        #     secondary interest. Higher numbers are possible but not
-        #     common and interpretation is not standard. A field with a
-        #     ``signal`` attribute should not have an ``axis`` attribute.
-        # primary: Integer indicating the priority of selection of this
-        #     field for plotting (or visualization) as an axis. Presence
-        #     of the ``primary`` attribute means this field is an
-        #     abscissa.
-        # type_value: Defines the type of the element as allowed by NeXus.
-        #     See :ref:`here&lt;Design-DataTypes&gt;` and
-        #     :ref:`elsewhere&lt;nxdl-types&gt;` for the complete list of
-        #     allowed types.
-        # min_occurs: Defines the minimum number of times this ``field``
-        #     may be used.  Its value is confined to zero or greater.
-        #     Must be less than or equal to the value for the "maxOccurs"
-        #     attribute.
-        # recommended: A synonym for optional, but with the recommendation
-        #     that this ``field`` be specified.
-        # optional: A synonym for minOccurs=0.
-        # max_occurs: Defines the maximum number of times this element may
-        #     be used.  Its value is confined to zero or greater.  Must be
-        #     greater than or equal to the value for the "minOccurs"
-        #     attribute. A value of "unbounded" is allowed.
-        # stride: The ``stride`` and ``data_offset`` attributes are used
-        #     together to index the array of data items in a multi-
-        #     dimensional array.  They may be used as an alternative
-        #     method to address a data array that is not stored in the
-        #     standard NeXus method of "C" order. The ``stride`` list
-        #     chooses array locations from the data array  with each value
-        #     in the ``stride`` list determining how many elements to move
-        #     in each dimension. Setting a value in the ``stride`` array
-        #     to 1 moves to each element in that dimension of the data
-        #     array, while setting a value of 2 in a location in the
-        #     ``stride`` array moves to every other element in that
-        #     dimension of the data array.  A value in the ``stride`` list
-        #     may be positive to move forward or negative to step
-        #     backward. A value of zero will not step (and is of no
-        #     particular use). See
-        #     https://support.hdfgroup.org/HDF5/Tutor/phypereg.html or *4.
-        #     Dataspace Selection Operations* in
-        #     https://portal.hdfgroup.org/display/HDF5/Dataspaces The
-        #     ``stride`` attribute contains a comma-separated list of
-        #     integers. (In addition to the required comma delimiter,
-        #     whitespace is also allowed to improve readability.) The
-        #     number of items in the list is equal to the rank of the data
-        #     being stored.  The value of each item is the spacing of the
-        #     data items in that subscript of the array.
-        # data_offset: The ``stride`` and ``data_offset`` attributes are
-        #     used together to index the array of data items in a multi-
-        #     dimensional array.  They may be used as an alternative
-        #     method to address a data array that is not stored in the
-        #     standard NeXus method of "C" order. The ``data_offset``
-        #     attribute determines the starting coordinates of the data
-        #     array for each dimension. See
-        #     https://support.hdfgroup.org/HDF5/Tutor/phypereg.html or *4.
-        #     Dataspace Selection Operations* in
-        #     https://portal.hdfgroup.org/display/HDF5/Dataspaces The
-        #     ``data_offset`` attribute contains a comma-separated list of
-        #     integers. (In addition to the required comma delimiter,
-        #     whitespace is also allowed to improve readability.) The
-        #     number of items in the list is equal to the rank of the data
-        #     being stored.  The value of each item is the offset in the
-        #     array of the first data item of that subscript of the array.
-        # interpretation: This instructs the consumer of the data what the
-        #     last dimensions of the data are. It allows plotting software
-        #     to work out the natural way of displaying the data. For
-        #     example a single-element, energy-resolving, fluorescence
-        #     detector with 512 bins should have
-        #     ``interpretation="spectrum"``. If the detector is scanned
-        #     over a 512 x 512 spatial grid, the data reported will be of
-        #     dimensions: 512 x 512 x 512. In this example, the initial
-        #     plotting representation should default to data of the same
-        #     dimensions of a 512 x 512 pixel ``image`` detector where the
-        #     images where taken at 512 different pressure values. In
-        #     simple terms, the allowed values mean: * ``scalar`` = 0-D
-        #     data to be plotted * ``scaler`` = DEPRECATED, use ``scalar``
-        #     * ``spectrum`` = 1-D data to be plotted * ``image`` = 2-D
-        #     data to be plotted * ``rgb-image`` = 3-D data to be plotted
-        #     * ``rgba-image`` = 3-D data to be plotted * ``hsl-image`` =
-        #     3-D data to be plotted * ``hsla-image`` = 3-D data to be
-        #     plotted * ``cmyk-image`` = 3-D data to be plotted *
-        #     ``vertex`` = 3-D data to be plotted
+        generate_classes.append(new_class)
 
-    # print("\n".join(output))
-    # breakpoint()
+    print("\n\n".join(str(x) for x in generate_classes))

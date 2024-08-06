@@ -7,33 +7,24 @@ import glob
 import textwrap
 from xsdata_pydantic.bindings import XmlParser
 from pydantic import BaseModel, ConfigDict
-from pydantic.functional_validators import BeforeValidator
 
 from . import nxdl
 from .nxdl import Definition, DocType
-from typing import Any, Annotated, Self
+from typing import Any, Self, TypedDict, Unpack
 
 
-def _convert_doc(doc: DocType | list[DocType]) -> str:
+def _convert_doc(v: DocType | list[DocType] | None) -> str | None:
     """Take a DocType (or list of), and convert to a single, plain string"""
-    if isinstance(doc, DocType):
-        doc = [doc]
-    full_text: str = "\n\n".join(
+    if v is None:
+        return None
+    if isinstance(v, DocType):
+        v = [v]
+    out: str = "\n\n".join(
         itertools.chain.from_iterable(
-            [textwrap.dedent(y) for y in x.content] for x in doc
+            [textwrap.dedent(str(y)) for y in x.content] for x in v
         )
     )
-    return "\n".join(x.rstrip() for x in full_text.splitlines())
-
-
-# Something to convert nxdl DocTypes to String
-def _convert_doc_validator(v: Any) -> Any:
-    if isinstance(v, DocType) or isinstance(v, list):
-        return _convert_doc(v)
-    return v
-
-
-type ParsedDoc = Annotated[str, BeforeValidator(_convert_doc_validator)]
+    return "\n".join(x.rstrip() for x in out.splitlines())
 
 
 class Field[T](BaseModel):
@@ -101,7 +92,7 @@ def _prepare_paragraphs(
 class ClassAttribute(BaseModel):
     name: str
     type: str
-    doc: ParsedDoc | None
+    doc: str | None
 
     def __str__(self) -> str:
         if self.doc:
@@ -115,17 +106,30 @@ class ClassAttribute(BaseModel):
         return cls(
             name=attr.name,
             type=_resolve_type(attr.type_value, optional=attr.optional),
-            doc=attr.doc,
+            doc=_convert_doc(attr.doc),
         )
 
 
 class ClassDefinition(BaseModel):
     name: str
     parent: str
-    doc: ParsedDoc | None = None
+    doc: str | None = None
     attributes: list[ClassAttribute] = []
     fields: list[ClassAttribute] = []
     groups: list[ClassAttribute] = []
+
+    class ClassDefinitionKwargs(TypedDict, total=False):
+        """Exists to duplicate the class init to allow passing in doc for coercion"""
+
+        name: str
+        parent: str
+        doc: str | DocType | list[DocType] | None
+        attributes: list[ClassAttribute]
+        fields: list[ClassAttribute]
+        groups: list[ClassAttribute]
+
+    def __init__(self, **kwargs: Unpack[ClassDefinitionKwargs]):
+        super().__init__(**kwargs)
 
     def __str__(self) -> str:
         parts = [f"class {self.name}({self.parent}):"]
@@ -217,6 +221,7 @@ def run():
 
     for defn in definitions:
         # Holds separate line parts for the class body output
+        assert isinstance(defn.extends, str)
         new_class = ClassDefinition(name=defn.name, parent=defn.extends, doc=defn.doc)
 
         # Now, handle attributes
@@ -238,7 +243,7 @@ def run():
                 group_type += " = []"
 
             new_class.groups.append(
-                ClassAttribute(name=name, type=group_type, doc=group.doc)
+                ClassAttribute(name=name, type=group_type, doc=_convert_doc(group.doc))
             )
 
             assert not group.group, "Groups (typed?) contains groups?!?!?"
@@ -298,7 +303,9 @@ def run():
                 field_type += " = None"
 
             new_class.fields.append(
-                ClassAttribute(name=field.name, type=field_type, doc=field.doc)
+                ClassAttribute(
+                    name=field.name, type=field_type, doc=_convert_doc(field.doc)
+                )
             )
 
             # Other things we can't or don't yet handle

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from . import nxdl
 from .nxdl import Definition, DocType
-from typing import Any, Self, TypedDict, Unpack
+from typing import Any, Self
 
 
 def _convert_doc(v: DocType | list[DocType] | None) -> str | None:
@@ -118,19 +118,6 @@ class ClassDefinition(BaseModel):
     fields: list[ClassAttribute] = []
     groups: list[ClassAttribute] = []
 
-    class ClassDefinitionKwargs(TypedDict, total=False):
-        """Exists to duplicate the class init to allow passing in doc for coercion"""
-
-        name: str
-        parent: str
-        doc: str | DocType | list[DocType] | None
-        attributes: list[ClassAttribute]
-        fields: list[ClassAttribute]
-        groups: list[ClassAttribute]
-
-    def __init__(self, **kwargs: Unpack[ClassDefinitionKwargs]):
-        super().__init__(**kwargs)
-
     def __str__(self) -> str:
         parts = [f"class {self.name}({self.parent}):"]
         if self.doc:
@@ -222,7 +209,9 @@ def run():
     for defn in definitions:
         # Holds separate line parts for the class body output
         assert isinstance(defn.extends, str)
-        new_class = ClassDefinition(name=defn.name, parent=defn.extends, doc=defn.doc)
+        new_class = ClassDefinition(
+            name=defn.name, parent=defn.extends, doc=_convert_doc(defn.doc)
+        )
 
         # Now, handle attributes
         for attr in defn.attribute:

@@ -17,8 +17,11 @@ pint = "^0.24.3"
 parse = "nexus.parse:run"
 
 [tool.poetry.group.dev.dependencies]
-xsdata = {extras = ["cli"], version = "^24.7"}
+xsdata = { extras = ["cli"], version = "^24.7" }
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pyright]
+ignore = ["src/nexus/nxdl.py"]

@@ -299,6 +299,8 @@ def run():
         # object to represent them here.
         for field in defn.field_value:
             optional = field.optional or field.min_occurs == 0
+            # Collate any annotations to apply
+            field_annotations = []
 
             # Work out what data type we need to use for this
             base_type = _resolve_type(field.type_value, optional=False)

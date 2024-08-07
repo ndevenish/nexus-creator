@@ -9,6 +9,7 @@ from xsdata_pydantic.bindings import XmlParser
 from pydantic import BaseModel, ConfigDict
 
 from . import nxdl
+from . import core
 from .nxdl import Definition, DocType
 from typing import Any, Self
 
@@ -48,6 +49,15 @@ type_maps = {
     "NX_FLOAT": "float",
     "NX_NUMBER": "int | float",
     "NX_DATE_TIME": "datetime.datetime",
+    "NX_CHAR_OR_NUMBER": "str | int | float",
+    # "ISO8601": ,
+    # "NX_BINARY": ,
+    # "NX_CCOMPLEX": ,
+    # "NX_COMPLEX": ,
+    # "NX_PCOMPLEX": ,
+    "NX_POSINT": "pydantic.PositiveInt",
+    # "NX_QUATERNION": ,
+    # "NX_UINT": ,
 }
 # Mapping the pint dimensionality name from the nexus unit name
 dimensions_map = {
@@ -87,11 +97,12 @@ dimensions_map = {
     "NX_WAVENUMBER": "[]",
 }
 
-IMPORTS = """
+GENERATED_HEADER = """
 import datetime
 from pint import Quantity
-from typing import Literal
-from .core import NXobject, Field
+from typing import Literal, Annotated
+from .core import NXobject, Field, Units, QuantityType
+from pydantic import PositiveInt
 """
 
 
@@ -149,6 +160,7 @@ class ClassAttribute(BaseModel):
 
 class ClassDefinition(BaseModel):
     name: str
+    generics: list[str] = []
     parent: str
     doc: str | None = None
     attributes: list[ClassAttribute] = []
@@ -162,7 +174,11 @@ class ClassDefinition(BaseModel):
         )
 
     def __str__(self) -> str:
-        parts = [f"class {self.name}({self.parent}):"]
+        generics = ""
+        if self.generics:
+            generics = f"[{', '.join(self.generics)}]"
+
+        parts = [f"class {self.name}{generics}({self.parent}):"]
         if self.doc:
             parts.append(
                 textwrap.indent(
@@ -198,6 +214,7 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
     to_set.pop("type_value", None)
     to_set.pop("enumeration", None)
     to_set.pop("attribute", None)
+    to_set.pop("units", None)
 
     # name is required but redundant for our purposes. Don't give a
     # result if it's the only value
@@ -216,7 +233,8 @@ def _create_attribute_subclass(
         name = "Field" + attributes[0].name.replace("_", " ").title().replace(" ", "")
 
     return ClassDefinition(
-        name=name + "[T]",
+        name=name,
+        generics=["T"],
         parent="Field[T]",
         attributes=[ClassAttribute.from_attribute(attr) for attr in attributes],
     )
@@ -248,6 +266,7 @@ def run():
     generate_classes: list[ClassDefinition] = []
 
     for defn in definitions:
+        print(f"Processing {defn.name}", file=sys.stderr)
         # Holds separate line parts for the class body output
         assert isinstance(defn.extends, str)
         new_class = ClassDefinition(
@@ -285,11 +304,13 @@ def run():
             # Things we might be able to handle, once we see instances of
             if group.attribute:
                 print(
-                    f"Warning: Found group ({defn.name}.{group.name}) with declared attribute ({', '.join(x.name for x in group.attribute)}), is this redundant?"
+                    f"Warning: Found group ({defn.name}.{group.name}) with declared attribute ({', '.join(x.name for x in group.attribute)}), is this redundant?",
+                    file=sys.stderr,
                 )
             if group.field_value:
                 print(
-                    f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later"
+                    f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later",
+                    file=sys.stderr,
                 )
             assert not group.choice
             assert not group.link
@@ -311,7 +332,19 @@ def run():
                     # We have a dimensioned unit
                     # Note that this is currently invalid pint declaration, we
                     # need to find a way to make this declarable (dimension or plain unit)
-                    field_type = f"Quantity[{base_type}]"
+                    field_type = "Quantity"
+                    field_annotations.append(f"QuantityType[{base_type}]")
+                    units = field.units.removeprefix("NX_")
+                    if units == "ANY":
+                        pass
+                    else:
+                        # if units == "TRANSFORM":
+                        # pass
+                        assert hasattr(core.Units, units), f"Unknown unit: {units}"
+                        field_annotations.append(
+                            f"Units.{field.units.removeprefix("NX_")}"
+                        )
+
                 else:
                     field_type = base_type
 
@@ -333,9 +366,17 @@ def run():
             if optional:
                 field_type += " | None"
 
+            # If we have "ANY" naming, then this field occur multiple times,
+            # and
+            if field.name_type is nxdl.FieldTypeNameType.ANY:
+                field_type = f"dict[str, {field_type}]"
+
             # If we have a complex (or non-default) field spec, annotate the type with it
-            if field_annotation := _field_repr(field):
-                field_type = f"Annotated[{field_type}, {field_annotation}]"
+            if source_field_decl := _field_repr(field):
+                field_annotations.append(source_field_decl)
+
+            if field_annotations:
+                field_type = f"Annotated[{field_type}, {', '.join(field_annotations)}]"
 
             if optional:
                 field_type += " = None"
@@ -348,7 +389,6 @@ def run():
             )
 
             # Other things we can't or don't yet handle
-            assert field.name_type == nxdl.FieldTypeNameType.SPECIFIED
             assert not field.dimensions
             assert not field.dimensions and field.max_occurs == 1
             assert field.min_occurs == 0
@@ -365,4 +405,5 @@ def run():
 
         generate_classes.append(new_class)
 
+    print(GENERATED_HEADER)
     print("\n\n".join(str(x) for x in generate_classes))

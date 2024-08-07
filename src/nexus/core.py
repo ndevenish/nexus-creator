@@ -73,6 +73,8 @@ class NXobject(BaseModel):
     The base NX object.
     """
 
+    model_config = ConfigDict(validate_assignment=True)
+
 
 __all__ = [
     "Units",

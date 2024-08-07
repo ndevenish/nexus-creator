@@ -49,6 +49,43 @@ type_maps = {
     "NX_NUMBER": "int | float",
     "NX_DATE_TIME": "datetime.datetime",
 }
+# Mapping the pint dimensionality name from the nexus unit name
+dimensions_map = {
+    "NX_ANY": None,
+    # NX_TRANSFORMATION is special, because it changes depending on the type of transform
+    "NX_TRANSFORMATION": None,
+    "NX_ANGLE": "[]",
+    "NX_AREA": "[area]",
+    "NX_CROSS_SECTION": "[area]",
+    "NX_CHARGE": "[charge]",
+    "NX_CURRENT": "[current]",
+    "NX_DIMENSIONLESS": "[]",
+    "NX_EMITTANCE": "[length] * [area]",
+    "NX_ENERGY": "[energy]",
+    "NX_FLUX": "1 / [time] / [area]",
+    "NX_FREQUENCY": "[frequency]",
+    "NX_LENGTH": "[length]",
+    "NX_MASS": "[mass]",
+    "NX_MASS_DENSITY": "[density]",
+    "NX_MOLECULAR_WEIGHT": "[mass] / [substance]",
+    "NX_PER_AREA": "1 / [area]",
+    "NX_PER_LENGTH": "1 / [length]",
+    "NX_PERIOD": "[time]",
+    "NX_POWER ": "[power]",
+    "NX_PRESSURE": "[pressure]",
+    "NX_PULSES": "[]",
+    "NX_COUNT": "[]",
+    "NX_SCATTERING_LENGTH_DENSITY": "[area]",
+    "NX_SOLID_ANGLE": "[]",
+    "NX_TEMPERATURE": "[temperature]",
+    "NX_TIME": "[time]",
+    "NX_TIME_OF_FLIGHT": "[time]",
+    "NX_UNITLESS": "[]",
+    "NX_VOLTAGE": "[electric_potential]",
+    "NX_VOLUME": "[volume]",
+    "NX_WAVELENGTH": "[length]",
+    "NX_WAVENUMBER": "[]",
+}
 
 IMPORTS = """
 import datetime
@@ -118,6 +155,12 @@ class ClassDefinition(BaseModel):
     fields: list[ClassAttribute] = []
     groups: list[ClassAttribute] = []
 
+    def __contains__(self, name: str) -> bool:
+        return any(
+            name == x.name
+            for x in itertools.chain(self.attributes, self.fields, self.groups)
+        )
+
     def __str__(self) -> str:
         parts = [f"class {self.name}({self.parent}):"]
         if self.doc:
@@ -148,8 +191,6 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
     """
     to_set = {}
     for k, v in field.model_fields.items():
-        # if k == "attribute":
-        #     breakpoint()
         if getattr(field, k) != v.get_default(call_default_factory=True):
             to_set[k] = getattr(field, k)
     # Things we implicitly have access to
@@ -166,7 +207,7 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
 
 
 def _create_attribute_subclass(
-    attributes: list[nxdl.AttributeType], field_name: str, definition_name: str
+    attributes: list[nxdl.AttributeType], field_name: str, _definition_name: str
 ) -> ClassDefinition:
     # Work out what to call this
     name = f"Field {field_name}".replace("_", " ").title().replace(" ", "")
@@ -175,8 +216,8 @@ def _create_attribute_subclass(
         name = "Field" + attributes[0].name.replace("_", " ").title().replace(" ", "")
 
     return ClassDefinition(
-        name=name,
-        parent="Field",
+        name=name + "[T]",
+        parent="Field[T]",
         attributes=[ClassAttribute.from_attribute(attr) for attr in attributes],
     )
 
@@ -215,6 +256,8 @@ def run():
 
         # Now, handle attributes
         for attr in defn.attribute:
+            assert attr.name not in new_class
+
             # Attributes are simple values, stored on the group (or
             # dataset) itself. These can just get added as plain
             # properties onto the output class.
@@ -231,6 +274,7 @@ def run():
                 # If optional, then default to an empty list
                 group_type += " = []"
 
+            assert name not in new_class
             new_class.groups.append(
                 ClassAttribute(name=name, type=group_type, doc=_convert_doc(group.doc))
             )
@@ -239,7 +283,10 @@ def run():
             assert group.max_occurs is None
             assert group.min_occurs is None or group.min_occurs == 0
             # Things we might be able to handle, once we see instances of
-            assert not group.attribute, "Groups can have defined attributes, redundantly with their type definition? How to handle?"
+            if group.attribute:
+                print(
+                    f"Warning: Found group ({defn.name}.{group.name}) with declared attribute ({', '.join(x.name for x in group.attribute)}), is this redundant?"
+                )
             if group.field_value:
                 print(
                     f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later"
@@ -291,6 +338,7 @@ def run():
             if optional:
                 field_type += " = None"
 
+            assert field.name not in new_class.attributes
             new_class.fields.append(
                 ClassAttribute(
                     name=field.name, type=field_type, doc=_convert_doc(field.doc)

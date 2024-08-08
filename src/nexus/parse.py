@@ -418,7 +418,8 @@ def run():
             # assert not field.dimensions and field.max_occurs == 1
             if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
                 print(
-                    f"Warning: Field {defn.name}.{field.name} has unbounded multiplicity; how does this happen on a field? Ignoring."
+                    f"Warning: Field {defn.name}.{field.name} has unbounded multiplicity; how does this happen on a field? Ignoring.",
+                    file=sys.stderr,
                 )
             else:
                 assert (
@@ -428,7 +429,8 @@ def run():
 
             if any(x.name == "units" for x in field.attribute):
                 print(
-                    f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?"
+                    f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?",
+                    file=sys.stderr,
                 )
 
             # ), f"Field {defn.name}.{field.name} has nonzero minimum occurence ({field})"

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import itertools
 import sys
 from argparse import ArgumentParser
@@ -6,7 +8,7 @@ from pathlib import Path
 import glob
 import textwrap
 from xsdata_pydantic.bindings import XmlParser
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from . import nxdl
 from . import core
@@ -26,13 +28,6 @@ def _convert_doc(v: DocType | list[DocType] | None) -> str | None:
         )
     )
     return "\n".join(x.rstrip() for x in out.splitlines())
-
-
-class Field[T](BaseModel):
-    """Represents an NXS Field (dataset), with attributes allowed"""
-
-    value: T
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class NXobject(BaseModel):
@@ -61,9 +56,10 @@ type_maps = {
 }
 # Mapping the pint dimensionality name from the nexus unit name
 dimensions_map = {
-    "NX_ANY": None,
+    # NX_ANY we just ignore
+    # "NX_ANY": None,
     # NX_TRANSFORMATION is special, because it changes depending on the type of transform
-    "NX_TRANSFORMATION": None,
+    # "NX_TRANSFORMATION": None,
     "NX_ANGLE": "[]",
     "NX_AREA": "[area]",
     "NX_CROSS_SECTION": "[area]",

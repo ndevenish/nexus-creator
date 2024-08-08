@@ -101,11 +101,13 @@ GENERATED_HEADER = """
 from __future__ import annotations
 
 import datetime
-from pint import Quantity
-from typing import Literal, Annotated
-from .core import NXobject, Field, Units, QuantityType
-from pydantic import PositiveInt
+from typing import Annotated, Literal
+
 from annotated_types import MinLen
+from pint import Quantity
+from pydantic import PositiveInt
+
+from .core import Field, NXobject, QuantityType, Units
 """
 
 

@@ -631,4 +631,4 @@ test = ["codecov", "lxml", "pre-commit", "pytest", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "995f2f35298c26cb760d05e3501cbc77bc17ddce567474b43ca7263bd74cd27f"
+content-hash = "0f76825724fb56ef7c8d3dcf5dbb582a289e3da7ee52511ebf22000bfb579232"

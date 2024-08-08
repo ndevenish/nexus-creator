@@ -6,7 +6,8 @@ from pint import Quantity
 
 def _check_dimension(dim: str, value: Quantity) -> Quantity:
     """Checks that a Quantity value has a specific dimensionality"""
-    assert value.check(dim), f"Quantity dimensions do not match '{dim}'"
+    if not value.check(dim):
+        raise ValueError(f"Quantity dimensions do not match '{dim}'")
     return value
 
 

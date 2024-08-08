@@ -50,12 +50,12 @@ type_maps = {
     "NX_NUMBER": "int | float",
     "NX_DATE_TIME": "datetime.datetime",
     "NX_CHAR_OR_NUMBER": "str | int | float",
+    "NX_BINARY": "bytes",
+    "NX_POSINT": "pydantic.PositiveInt",
     # "ISO8601": ,
-    # "NX_BINARY": ,
     # "NX_CCOMPLEX": ,
     # "NX_COMPLEX": ,
     # "NX_PCOMPLEX": ,
-    "NX_POSINT": "pydantic.PositiveInt",
     # "NX_QUATERNION": ,
     # "NX_UINT": ,
 }
@@ -103,17 +103,25 @@ from pint import Quantity
 from typing import Literal, Annotated
 from .core import NXobject, Field, Units, QuantityType
 from pydantic import PositiveInt
+from annotated_types import MinLen
 """
 
 
-def _resolve_type(type_value: list | Any, optional: bool = True) -> str:
+def _resolve_type(
+    type_value: list | Any,
+    optional: bool = True,
+    enumeration: nxdl.EnumerationType | None = None,
+) -> str:
     if isinstance(type_value, list):
+        # Sometimes type value comes out of parsing the definitions as a list
         assert len(type_value) == 1
         type_value = type_value[0]
-    if optional:
-        return type_maps[type_value] + " | None = None"
+    if enumeration:
+        type_value = f"Literal[{', '.join(repr(x.value) for x in enumeration.item)}]"
     else:
-        return type_maps[type_value]
+        type_value = type_maps[type_value]
+
+    return type_value + (" | None = None" if optional else "")
 
 
 def _prepare_paragraphs(
@@ -153,7 +161,9 @@ class ClassAttribute(BaseModel):
     def from_attribute(cls, attr: nxdl.AttributeType) -> Self:
         return cls(
             name=attr.name,
-            type=_resolve_type(attr.type_value, optional=attr.optional),
+            type=_resolve_type(
+                attr.type_value, optional=attr.optional, enumeration=attr.enumeration
+            ),
             doc=_convert_doc(attr.doc),
         )
 
@@ -215,6 +225,9 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
     to_set.pop("enumeration", None)
     to_set.pop("attribute", None)
     to_set.pop("units", None)
+    to_set.pop("name_type", None)
+    to_set.pop("min_occurs", None)
+    to_set.pop("max_occurs", None)
 
     # name is required but redundant for our purposes. Don't give a
     # result if it's the only value
@@ -283,24 +296,27 @@ def run():
             new_class.attributes.append(ClassAttribute.from_attribute(attr))
 
             # Unhandled things that we might want to do later
-            assert not attr.enumeration
+            # assert (
+            #     not attr.enumeration
+            # ), f"Enumerated attribute: {defn.name}.{attr.name}"
             assert not attr.dimensions
 
         for group in defn.group:
+            group_annotations = []
             name = group.name or group.type_value[2:]
             group_type = f"list[{group.type_value}]"
             if group.optional or group.min_occurs == 0:
                 # If optional, then default to an empty list
                 group_type += " = []"
 
-            assert name not in new_class
-            new_class.groups.append(
-                ClassAttribute(name=name, type=group_type, doc=_convert_doc(group.doc))
-            )
-
             assert not group.group, "Groups (typed?) contains groups?!?!?"
             assert group.max_occurs is None
-            assert group.min_occurs is None or group.min_occurs == 0
+            if group.min_occurs:
+                # MinLen (from annotated-types) is easier to read than
+                # pydantic.Field, especially when we are trying not to
+                # conflict names.
+                group_annotations.append(f"MinLen({group.min_occurs})")
+
             # Things we might be able to handle, once we see instances of
             if group.attribute:
                 print(
@@ -315,6 +331,14 @@ def run():
             assert not group.choice
             assert not group.link
 
+            if group_annotations:
+                group_type = f"Annotated[{group_type}, {', '.join(group_annotations)}]"
+
+            assert name not in new_class
+            new_class.groups.append(
+                ClassAttribute(name=name, type=group_type, doc=_convert_doc(group.doc))
+            )
+
         # Now, process the fields. Fields are complex; they are datasets, but can
         # contain extra attribute information, so we need to use a wrapped value
         # object to represent them here.
@@ -324,29 +348,30 @@ def run():
             field_annotations = []
 
             # Work out what data type we need to use for this
-            base_type = _resolve_type(field.type_value, optional=False)
-            if field.enumeration:
-                field_type = f"Literal[{', '.join(repr(x.value) for x in field.enumeration.item)}]"
-            else:
-                if field.units:
-                    # We have a dimensioned unit
-                    # Note that this is currently invalid pint declaration, we
-                    # need to find a way to make this declarable (dimension or plain unit)
-                    field_type = "Quantity"
-                    field_annotations.append(f"QuantityType[{base_type}]")
-                    units = field.units.removeprefix("NX_")
-                    if units == "ANY":
-                        pass
-                    else:
-                        # if units == "TRANSFORM":
-                        # pass
-                        assert hasattr(core.Units, units), f"Unknown unit: {units}"
-                        field_annotations.append(
-                            f"Units.{field.units.removeprefix("NX_")}"
-                        )
-
+            base_type = _resolve_type(
+                field.type_value, optional=False, enumeration=field.enumeration
+            )
+            assert not (field.units and field.enumeration)
+            if field.units:
+                # We have a dimensioned unit
+                # Note that this is currently invalid pint declaration, we
+                # need to find a way to make this declarable (dimension or plain unit)
+                field_type = "Quantity"
+                field_annotations.append(f"QuantityType[{base_type}]")
+                units = field.units.removeprefix("NX_")
+                if units == "ANY":
+                    pass
+                elif units == "TRANSFORMATION":
+                    print(
+                        f"Warning: Encountered NX_TRANSFORMATION on class {defn.name}. This is currently unhandled by typing.",
+                        file=sys.stderr,
+                    )
                 else:
-                    field_type = base_type
+                    assert hasattr(core.Units, units), f"Unknown unit: {units}"
+                    field_annotations.append(f"Units.{field.units.removeprefix("NX_")}")
+
+            else:
+                field_type = base_type
 
             # Fields can have lists of declared attributes. We handle this by
             # having explicit Field subclasses with named attributes containing
@@ -389,9 +414,24 @@ def run():
             )
 
             # Other things we can't or don't yet handle
-            assert not field.dimensions
-            assert not field.dimensions and field.max_occurs == 1
-            assert field.min_occurs == 0
+            # assert not field.dimensions
+            # assert not field.dimensions and field.max_occurs == 1
+            if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
+                print(
+                    f"Warning: Field {defn.name}.{field.name} has unbounded multiplicity; how does this happen on a field? Ignoring."
+                )
+            else:
+                assert (
+                    (field.min_occurs == 0 and field.max_occurs in {0, 1})
+                    or (field.min_occurs == 1 and field.max_occurs == 1)
+                ), f"It's expected min/max_occurs only used to mark optionality ({field})"
+
+            if any(x.name == "units" for x in field.attribute):
+                print(
+                    f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?"
+                )
+
+            # ), f"Field {defn.name}.{field.name} has nonzero minimum occurence ({field})"
 
             # Other things not handled, that otherwise may be present on
             # the field annotation:

@@ -51,7 +51,7 @@ type_maps = {
     "NX_DATE_TIME": "datetime.datetime",
     "NX_CHAR_OR_NUMBER": "str | int | float",
     "NX_BINARY": "bytes",
-    "NX_POSINT": "pydantic.PositiveInt",
+    "NX_POSINT": "PositiveInt",
     # "ISO8601": ,
     # "NX_CCOMPLEX": ,
     # "NX_COMPLEX": ,

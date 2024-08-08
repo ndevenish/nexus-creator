@@ -13,6 +13,8 @@ xsdata-pydantic = "^24.5"
 rich = "^13.7.1"
 pint = "^0.24.3"
 annotated-types = "^0.7.0"
+h5py = "^3.11.0"
+numpy = "^2.0.1"
 
 [tool.poetry.scripts]
 parse = "nexus.parse:run"

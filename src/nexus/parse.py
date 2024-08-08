@@ -100,6 +100,7 @@ import datetime
 from typing import Annotated, Literal
 
 from annotated_types import MinLen
+from h5py import Dataset, ExternalLink
 from pint import Quantity
 from pydantic import PositiveInt
 

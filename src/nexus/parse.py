@@ -98,6 +98,8 @@ dimensions_map = {
 }
 
 GENERATED_HEADER = """
+from __future__ import annotations
+
 import datetime
 from pint import Quantity
 from typing import Literal, Annotated
@@ -190,9 +192,10 @@ class ClassDefinition(BaseModel):
 
         parts = [f"class {self.name}{generics}({self.parent}):"]
         if self.doc:
+            str_type = "r" if "\\" in self.doc else ""
             parts.append(
                 textwrap.indent(
-                    '"""\n' + _prepare_paragraphs(self.doc) + '\n"""', "    "
+                    f'{str_type}"""\n' + _prepare_paragraphs(self.doc) + '\n"""', "    "
                 ),
             )
 
@@ -357,7 +360,7 @@ def run():
                 # Note that this is currently invalid pint declaration, we
                 # need to find a way to make this declarable (dimension or plain unit)
                 field_type = "Quantity"
-                field_annotations.append(f"QuantityType[{base_type}]")
+                field_annotations.append(f"QuantityType({base_type})")
                 units = field.units.removeprefix("NX_")
                 if units == "ANY":
                     pass

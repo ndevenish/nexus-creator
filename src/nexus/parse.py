@@ -402,8 +402,6 @@ def run():
                 field_superclass = attr_class.name
 
             field_type = f"{field_superclass}[{field_type}]"
-            if optional:
-                field_type += " | None"
 
             # If we have "ANY" naming, then this field occur multiple times,
             # and
@@ -417,6 +415,9 @@ def run():
             if field_annotations:
                 field_type = f"Annotated[{field_type}, {', '.join(field_annotations)}]"
 
+            field_type += " | ExternalLink"
+            if optional:
+                field_type += " | None"
             if optional:
                 field_type += " = None"
 

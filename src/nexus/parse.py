@@ -240,6 +240,7 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
 def _create_attribute_subclass(
     attributes: list[nxdl.AttributeType], field_name: str, _definition_name: str
 ) -> ClassDefinition:
+    """Create a new subclass to hold declared field attributes."""
     # Work out what to call this
     name = f"Field {field_name}".replace("_", " ").title().replace(" ", "")
     # If we only have one attribute, name for that
@@ -281,27 +282,24 @@ def run():
 
     for defn in definitions:
         print(f"Processing {defn.name}", file=sys.stderr)
-        # Holds separate line parts for the class body output
+        # Keep track of the class definition parts as we go
         assert isinstance(defn.extends, str)
         new_class = ClassDefinition(
             name=defn.name, parent=defn.extends, doc=_convert_doc(defn.doc)
         )
 
-        # Now, handle attributes
+        # First, handle attributes. These are simple values, stored on
+        # the group (or dataset) itself. These can just get added as
+        # plain properties onto the output class.
         for attr in defn.attribute:
             assert attr.name not in new_class
-
-            # Attributes are simple values, stored on the group (or
-            # dataset) itself. These can just get added as plain
-            # properties onto the output class.
             new_class.attributes.append(ClassAttribute.from_attribute(attr))
 
             # Unhandled things that we might want to do later
-            # assert (
-            #     not attr.enumeration
-            # ), f"Enumerated attribute: {defn.name}.{attr.name}"
             assert not attr.dimensions
 
+        # Now, handle groups. These are other nexus classes represented as HDF5
+        # group objects, and we can have multiple instances of each.
         for group in defn.group:
             group_annotations = []
             name = group.name or group.type_value[2:]
@@ -310,18 +308,22 @@ def run():
                 # If optional, then default to an empty list
                 group_type += " = []"
 
-            assert not group.group, "Groups (typed?) contains groups?!?!?"
+            assert (
+                not group.group
+            ), f"Group {defn.name}{group.name} contains other groups groups?!?!?"
             assert group.max_occurs is None
+
             if group.min_occurs:
                 # MinLen (from annotated-types) is easier to read than
                 # pydantic.Field, especially when we are trying not to
                 # conflict names.
                 group_annotations.append(f"MinLen({group.min_occurs})")
 
-            # Things we might be able to handle, once we see instances of
             if group.attribute:
+                # This.. happens, and adds extra definitions onto other
+                # objects. Not sure how to handle yet.
                 print(
-                    f"Warning: Found group ({defn.name}.{group.name}) with declared attribute ({', '.join(x.name for x in group.attribute)}), is this redundant?",
+                    f"Warning: Found group ({defn.name}.{group.name}) with declared attributes ({', '.join(x.name for x in group.attribute)}), is this redundant?",
                     file=sys.stderr,
                 )
             if group.field_value:
@@ -329,13 +331,17 @@ def run():
                     f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later",
                     file=sys.stderr,
                 )
+
+            # Other things that we have not seen happen, technically in spec?
             assert not group.choice
             assert not group.link
 
             if group_annotations:
                 group_type = f"Annotated[{group_type}, {', '.join(group_annotations)}]"
 
-            assert name not in new_class
+            assert (
+                name not in new_class
+            ), f"Group {name} already exists, we are trying to generate twice?"
             new_class.groups.append(
                 ClassAttribute(name=name, type=group_type, doc=_convert_doc(group.doc))
             )
@@ -343,7 +349,7 @@ def run():
         # Now, process the fields. Fields are complex; they are datasets, but can
         # contain extra attribute information, so we need to use a wrapped value
         # object to represent them here.
-        for field in defn.field_value:
+        for field in sorted(defn.field_value, key=lambda x: x.name):
             optional = field.optional or field.min_occurs == 0
             # Collate any annotations to apply
             field_annotations = []
@@ -352,11 +358,17 @@ def run():
             base_type = _resolve_type(
                 field.type_value, optional=False, enumeration=field.enumeration
             )
-            assert not (field.units and field.enumeration)
+            # A couple of fields don't have units, but specify that units is present in
+            # the attribute list. Just treat this as a Quantity.
+            if unit_attr := [x for x in field.attribute if x.name == "units"]:
+                field.attribute.remove(unit_attr[0])
+                field.units = "NX_ANY"
+                print(
+                    f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?",
+                    file=sys.stderr,
+                )
             if field.units:
                 # We have a dimensioned unit
-                # Note that this is currently invalid pint declaration, we
-                # need to find a way to make this declarable (dimension or plain unit)
                 field_type = "Quantity"
                 field_annotations.append(f"QuantityType({base_type})")
                 units = field.units.removeprefix("NX_")
@@ -416,7 +428,7 @@ def run():
 
             # Other things we can't or don't yet handle
             # assert not field.dimensions
-            # assert not field.dimensions and field.max_occurs == 1
+            assert not (field.units and field.enumeration)
             if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
                 print(
                     f"Warning: Field {defn.name}.{field.name} has unbounded multiplicity; how does this happen on a field? Ignoring.",
@@ -427,14 +439,6 @@ def run():
                     (field.min_occurs == 0 and field.max_occurs in {0, 1})
                     or (field.min_occurs == 1 and field.max_occurs == 1)
                 ), f"It's expected min/max_occurs only used to mark optionality ({field})"
-
-            if any(x.name == "units" for x in field.attribute):
-                print(
-                    f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?",
-                    file=sys.stderr,
-                )
-
-            # ), f"Field {defn.name}.{field.name} has nonzero minimum occurence ({field})"
 
             # Other things not handled, that otherwise may be present on
             # the field annotation:

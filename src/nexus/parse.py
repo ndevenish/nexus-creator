@@ -9,11 +9,13 @@ import glob
 import textwrap
 from xsdata_pydantic.bindings import XmlParser
 from pydantic import BaseModel
-
+import logging
 from . import nxdl
 from . import core
 from .nxdl import Definition, DocType
 from typing import Any, Self
+
+logger = logging.getLogger()
 
 
 def _convert_doc(v: DocType | list[DocType] | None) -> str | None:
@@ -263,7 +265,26 @@ def run():
         nargs="*",
         default=["v2024.2/base_classes/NXsource.nxdl.xml"],
     )
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+    )
+    # logging.basicConfig(
+    #     level=logging.DEBUG if args.verbose else logging.INFO,
+    #     handlers=[
+    #         RichHandler(
+    #             show_time=args.verbose,
+    #             show_level=args.verbose,
+    #             show_path=args.verbose,
+    #             log_time_format="[%Y-%m-%d %H:%M:%S]",
+    #             console=rich.console.Console(stderr=True),
+    #         )
+    #     ],
+    #     format="%(message)s",
+    # )
 
     # Expand every passed file as if it contained a glob
     args.sources = list(
@@ -282,7 +303,7 @@ def run():
     generate_classes: list[ClassDefinition] = []
 
     for defn in definitions:
-        print(f"Processing {defn.name}", file=sys.stderr)
+        logging.info(f"Processing {defn.name}")
         # Keep track of the class definition parts as we go
         assert isinstance(defn.extends, str)
         new_class = ClassDefinition(
@@ -323,14 +344,12 @@ def run():
             if group.attribute:
                 # This.. happens, and adds extra definitions onto other
                 # objects. Not sure how to handle yet.
-                print(
-                    f"Warning: Found group ({defn.name}.{group.name}) with declared attributes ({', '.join(x.name for x in group.attribute)}), is this redundant?",
-                    file=sys.stderr,
+                logger.warning(
+                    f"Warning: Found group ({defn.name}.{group.name}) with declared attributes ({', '.join(x.name for x in group.attribute)}), is this redundant?"
                 )
             if group.field_value:
-                print(
+                logger.warning(
                     f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later",
-                    file=sys.stderr,
                 )
 
             # Other things that we have not seen happen, technically in spec?
@@ -364,9 +383,8 @@ def run():
             if unit_attr := [x for x in field.attribute if x.name == "units"]:
                 field.attribute.remove(unit_attr[0])
                 field.units = "NX_ANY"
-                print(
+                logger.warning(
                     f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?",
-                    file=sys.stderr,
                 )
             if field.units:
                 # We have a dimensioned unit
@@ -376,9 +394,8 @@ def run():
                 if units == "ANY":
                     pass
                 elif units == "TRANSFORMATION":
-                    print(
+                    logger.warning(
                         f"Warning: Encountered NX_TRANSFORMATION on class {defn.name}. This is currently unhandled by typing.",
-                        file=sys.stderr,
                     )
                 else:
                     assert hasattr(core.Units, units), f"Unknown unit: {units}"
@@ -407,6 +424,21 @@ def run():
             # and
             if field.name_type is nxdl.FieldTypeNameType.ANY:
                 field_type = f"dict[str, {field_type}]"
+                if field.max_occurs != nxdl.NonNegativeUnboundedValue.UNBOUNDED:
+                    logger.warning(
+                        f"Warning: Any-named field {defn.name}.{field.name} has bounded occurences? Ignoring.",
+                    )
+            else:
+                if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
+                    logger.warning(
+                        f"Warning: Specifically-named field {defn.name}.{field.name} has unbounded occurences",
+                    )
+                else:
+                    # Catch other, non-unbounded cases
+                    assert (
+                        (field.min_occurs == 0 and field.max_occurs in {0, 1})
+                        or (field.min_occurs == 1 and field.max_occurs == 1)
+                    ), f"It's expected min/max_occurs only used to mark optionality ({field})"
 
             # If we have a complex (or non-default) field spec, annotate the type with it
             if source_field_decl := _field_repr(field):
@@ -431,16 +463,6 @@ def run():
             # Other things we can't or don't yet handle
             # assert not field.dimensions
             assert not (field.units and field.enumeration)
-            if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
-                print(
-                    f"Warning: Field {defn.name}.{field.name} has unbounded multiplicity; how does this happen on a field? Ignoring.",
-                    file=sys.stderr,
-                )
-            else:
-                assert (
-                    (field.min_occurs == 0 and field.max_occurs in {0, 1})
-                    or (field.min_occurs == 1 and field.max_occurs == 1)
-                ), f"It's expected min/max_occurs only used to mark optionality ({field})"
 
             # Other things not handled, that otherwise may be present on
             # the field annotation:

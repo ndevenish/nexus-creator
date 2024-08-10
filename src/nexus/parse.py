@@ -103,6 +103,7 @@ from typing import Annotated, Literal
 
 from annotated_types import MinLen
 from h5py import Dataset, ExternalLink
+from numpy.typing import NDArray
 from pint import Quantity
 from pydantic import PositiveInt
 
@@ -232,6 +233,7 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
     to_set.pop("name_type", None)
     to_set.pop("min_occurs", None)
     to_set.pop("max_occurs", None)
+    to_set.pop("dimensions", None)
 
     # name is required but redundant for our purposes. Don't give a
     # result if it's the only value
@@ -344,12 +346,24 @@ def run():
             if group.attribute:
                 # This.. happens, and adds extra definitions onto other
                 # objects. Not sure how to handle yet.
+                is_req = (
+                    "REQUIRED"
+                    if any(not x.optional for x in group.attribute)
+                    else "(optional)"
+                )
                 logger.warning(
-                    f"Warning: Found group ({defn.name}.{group.name}) with declared attributes ({', '.join(x.name for x in group.attribute)}), is this redundant?"
+                    f"Warning: Found group ({defn.name}.{group.name}) with declared {is_req} attributes ({', '.join(x.name for x in group.attribute)})"
                 )
             if group.field_value:
+                is_req = (
+                    "REQUIRED"
+                    if any(
+                        not (x.optional or x.min_occurs == 0) for x in group.field_value
+                    )
+                    else "(optional)"
+                )
                 logger.warning(
-                    f"Warning: Found field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later",
+                    f"Warning: Found {is_req} field definition on object {defn.name}.{name}. This is redundant? Check this is truly redundant later",
                 )
 
             # Other things that we have not seen happen, technically in spec?
@@ -370,12 +384,35 @@ def run():
         # contain extra attribute information, so we need to use a wrapped value
         # object to represent them here.
         for field in sorted(defn.field_value, key=lambda x: x.name):
+            ###################################################################
+            # Do validation/Correction for possible definition issues first
+            ###################################################################
+            if (
+                field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED
+                and field.name_type is nxdl.FieldTypeNameType.SPECIFIED
+            ):
+                logger.warning(
+                    f"Warning: Specifically-named field {defn.name}.{field.name} has unbounded occurences. Assuming name-type should be ANY.",
+                )
+                field.name_type = nxdl.FieldTypeNameType.ANY
+
+            if (
+                field.name_type is nxdl.FieldTypeNameType.ANY
+                and field.max_occurs != nxdl.NonNegativeUnboundedValue.UNBOUNDED
+            ):
+                logger.warning(
+                    f"Warning: Any-named field {defn.name}.{field.name} has bounded occurences? Ignoring.",
+                )
+                field.max_occurs = nxdl.NonNegativeUnboundedValue.UNBOUNDED
+            ###################################################################
+            ###################################################################
+
             optional = field.optional or field.min_occurs == 0
             # Collate any annotations to apply
             field_annotations = []
 
             # Work out what data type we need to use for this
-            base_type = _resolve_type(
+            field_type = _resolve_type(
                 field.type_value, optional=False, enumeration=field.enumeration
             )
             # A couple of fields don't have units, but specify that units is present in
@@ -386,10 +423,21 @@ def run():
                 logger.warning(
                     f"Warning: Field {defn.name}.{field.name} has 'units' attribute. Should this just be a quantity?",
                 )
+
+            if field.dimensions:
+                # We need to specify an NDArray, and metadata to enforce ndim
+                field_type = f"NDArray[{field_type}]"
+                if field.dimensions.rank is None or field.dimensions.rank.isnumeric():
+                    # We need to have every specified dimension
+                    field_annotations.append(f"NDim({field.dimensions.rank})")
+
             if field.units:
                 # We have a dimensioned unit
+                # - If this is an NDArray, then the NDArray takes care of data type
+                # - Otherwise, we want to append a QuantityType to specify
+                # if not field.dimensions:
+                field_annotations.append(f"QuantityType({field_type})")
                 field_type = "Quantity"
-                field_annotations.append(f"QuantityType({base_type})")
                 units = field.units.removeprefix("NX_")
                 if units == "ANY":
                     pass
@@ -400,9 +448,6 @@ def run():
                 else:
                     assert hasattr(core.Units, units), f"Unknown unit: {units}"
                     field_annotations.append(f"Units.{field.units.removeprefix("NX_")}")
-
-            else:
-                field_type = base_type
 
             # Fields can have lists of declared attributes. We handle this by
             # having explicit Field subclasses with named attributes containing
@@ -420,25 +465,16 @@ def run():
 
             field_type = f"{field_superclass}[{field_type}]"
 
-            # If we have "ANY" naming, then this field occur multiple times,
-            # and
+            # If we have "ANY" naming, then this field occur multiple times
             if field.name_type is nxdl.FieldTypeNameType.ANY:
                 field_type = f"dict[str, {field_type}]"
-                if field.max_occurs != nxdl.NonNegativeUnboundedValue.UNBOUNDED:
-                    logger.warning(
-                        f"Warning: Any-named field {defn.name}.{field.name} has bounded occurences? Ignoring.",
-                    )
-            else:
-                if field.max_occurs == nxdl.NonNegativeUnboundedValue.UNBOUNDED:
-                    logger.warning(
-                        f"Warning: Specifically-named field {defn.name}.{field.name} has unbounded occurences",
-                    )
-                else:
-                    # Catch other, non-unbounded cases
-                    assert (
-                        (field.min_occurs == 0 and field.max_occurs in {0, 1})
-                        or (field.min_occurs == 1 and field.max_occurs == 1)
-                    ), f"It's expected min/max_occurs only used to mark optionality ({field})"
+
+            # Catch other, non-unbounded cases
+            if field.name_type is nxdl.FieldTypeNameType.SPECIFIED:
+                assert (
+                    (field.min_occurs == 0 and field.max_occurs in {0, 1})
+                    or (field.min_occurs == 1 and field.max_occurs == 1)
+                ), f"It's expected min/max_occurs only used to mark optionality ({field})"
 
             # If we have a complex (or non-default) field spec, annotate the type with it
             if source_field_decl := _field_repr(field):
@@ -461,7 +497,6 @@ def run():
             )
 
             # Other things we can't or don't yet handle
-            # assert not field.dimensions
             assert not (field.units and field.enumeration)
 
             # Other things not handled, that otherwise may be present on

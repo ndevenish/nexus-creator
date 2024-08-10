@@ -107,7 +107,7 @@ from numpy.typing import NDArray
 from pint import Quantity
 from pydantic import PositiveInt
 
-from .core import Field, NXobject, QuantityType, Units
+from .core import Field, NDim, NXobject, QuantityType, Units
 """
 
 
@@ -234,6 +234,7 @@ def _field_repr(field: nxdl.FieldType) -> str | None:
     to_set.pop("min_occurs", None)
     to_set.pop("max_occurs", None)
     to_set.pop("dimensions", None)
+    to_set.pop("deprecated", None)
 
     # name is required but redundant for our purposes. Don't give a
     # result if it's the only value
@@ -489,11 +490,13 @@ def run():
             if optional:
                 field_type += " = None"
 
+            doc = _convert_doc(field.doc)
+            if field.deprecated:
+                doc = (f"DEPRECATED: {field.deprecated}\n\n" + (doc or "")).rstrip()
+
             assert field.name not in new_class.attributes
             new_class.fields.append(
-                ClassAttribute(
-                    name=field.name, type=field_type, doc=_convert_doc(field.doc)
-                )
+                ClassAttribute(name=field.name, type=field_type, doc=doc)
             )
 
             # Other things we can't or don't yet handle
